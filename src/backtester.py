@@ -1,7 +1,7 @@
 import numpy as np
 
 
-def backtest(prices, signals, initial_capital=10000.0, transaction_cost=0.0005, slippage=0.0005):
+def backtest(prices, signals, initial_capital=10000.0, transaction_cost=0.001, slippage=0.0005):
     capital = float(initial_capital)
     position = 0.0
 
@@ -43,18 +43,27 @@ def _sortino_ratio(returns):
     return float(np.sqrt(252) * returns.mean() / downside.std())
 
 
-def backtest_with_stats(prices, signals, initial_capital=10000.0, transaction_cost=0.0005, slippage=0.0005):
+def _profit_factor(trade_pnls):
+    trade_pnls = np.asarray(trade_pnls, dtype=float)
+    gross_profit = trade_pnls[trade_pnls > 0].sum()
+    gross_loss = np.abs(trade_pnls[trade_pnls < 0].sum())
+    if gross_loss == 0:
+        return float(0.0 if gross_profit == 0 else 99.0)
+    return float(gross_profit / gross_loss)
+
+
+def backtest_with_stats(prices, signals, initial_capital=10000.0, transaction_cost=0.001, slippage=0.0005):
     capital = float(initial_capital)
     position_qty = 0.0
     entry_price = None
     trades = 0
     wins = 0
 
-    equity_curve = []
     returns = []
     prev_equity = capital
     peak = capital
     max_drawdown = 0.0
+    trade_pnls = []
 
     for price, signal in zip(prices, signals):
         buy_price = price * (1 + slippage)
@@ -69,7 +78,9 @@ def backtest_with_stats(prices, signals, initial_capital=10000.0, transaction_co
         elif signal == "SELL" and position_qty > 0:
             exit_value = position_qty * sell_price
             cost = exit_value * transaction_cost
-            if entry_price is not None and sell_price > entry_price:
+            pnl_trade = (sell_price - entry_price) * position_qty if entry_price is not None else 0.0
+            trade_pnls.append(float(pnl_trade))
+            if pnl_trade > 0:
                 wins += 1
             capital += exit_value - cost
             position_qty = 0.0
@@ -77,7 +88,6 @@ def backtest_with_stats(prices, signals, initial_capital=10000.0, transaction_co
             trades += 1
 
         equity = capital + position_qty * sell_price
-        equity_curve.append(equity)
         r = (equity - prev_equity) / max(prev_equity, 1e-9)
         returns.append(r)
         prev_equity = equity
@@ -88,7 +98,9 @@ def backtest_with_stats(prices, signals, initial_capital=10000.0, transaction_co
 
     if position_qty > 0 and len(prices) > 0:
         final_price = prices[-1] * (1 - slippage)
-        if entry_price is not None and final_price > entry_price:
+        pnl_trade = (final_price - entry_price) * position_qty if entry_price is not None else 0.0
+        trade_pnls.append(float(pnl_trade))
+        if pnl_trade > 0:
             wins += 1
         capital = capital + position_qty * final_price
         trades += 1
@@ -104,15 +116,15 @@ def backtest_with_stats(prices, signals, initial_capital=10000.0, transaction_co
         "max_drawdown": float(max_drawdown),
         "sharpe": _sharpe_ratio(returns),
         "sortino": _sortino_ratio(returns),
+        "profit_factor": _profit_factor(trade_pnls),
     }
 
 
-def walk_forward_backtest(prices, signal_fn, train_window=252, test_window=63, **kwargs):
-    """
-    signal_fn(train_prices, test_prices) -> list[str] for the test slice
-    """
+def walk_forward_backtest(prices, signal_fn, train_window=1512, test_window=252, **kwargs):
+    """signal_fn(train_prices, test_prices) -> list[str] for each test slice."""
     prices = list(prices)
     all_signals = ["HOLD"] * len(prices)
+    window_stats = []
 
     start = train_window
     while start < len(prices):
@@ -125,6 +137,14 @@ def walk_forward_backtest(prices, signal_fn, train_window=252, test_window=63, *
             if start + i < len(all_signals):
                 all_signals[start + i] = s
 
+        ws = backtest_with_stats(test_slice, test_signals, **kwargs)
+        ws["start_idx"] = int(start)
+        ws["end_idx"] = int(end)
+        window_stats.append(ws)
+
         start = end
 
-    return backtest_with_stats(prices, all_signals, **kwargs)
+    overall = backtest_with_stats(prices, all_signals, **kwargs)
+    overall["windows"] = window_stats
+    return overall
+)
