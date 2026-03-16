@@ -10,15 +10,19 @@ STATE_COLS = [
     "volatility",
     "atr",
     "momentum_20",
+    "ema_20",
     "ema_50",
     "ema_200",
     "bb_width",
+    "adx",
     "volume_spike",
     "vwap",
     "regime",
     "sentiment",
     "predicted_return",
     "vol_regime",
+    "market_index_trend",
+    "vix_trend_20",
 ]
 
 
@@ -32,7 +36,7 @@ class TradingEnv(gym.Env):
       4: SELL large
     """
 
-    def __init__(self, df, initial_capital=10000.0, transaction_cost=0.0005):
+    def __init__(self, df, initial_capital=10000.0, transaction_cost=0.001):
         super().__init__()
         self.df = df.reset_index(drop=True)
         self.initial_capital = float(initial_capital)
@@ -43,6 +47,7 @@ class TradingEnv(gym.Env):
         self.position_qty = 0.0
         self.portfolio_value = self.initial_capital
         self.peak_value = self.initial_capital
+        self.returns = []
 
         self.action_space = spaces.Discrete(5)
         self.observation_space = spaces.Box(
@@ -59,6 +64,7 @@ class TradingEnv(gym.Env):
         self.position_qty = 0.0
         self.portfolio_value = self.initial_capital
         self.peak_value = self.initial_capital
+        self.returns = []
         return self._get_obs(), {}
 
     def _get_obs(self):
@@ -82,7 +88,7 @@ class TradingEnv(gym.Env):
 
         if side == 1 and self.capital > 0:
             trade_capital = self.capital * size_factor
-            qty = trade_capital / price
+            qty = trade_capital / max(price, 1e-9)
             self.position_qty += qty
             self.capital -= trade_capital
             txn_cost = trade_capital * self.transaction_cost
@@ -112,12 +118,21 @@ class TradingEnv(gym.Env):
 
         pnl = self.portfolio_value - prev_value
         ret = pnl / max(prev_value, 1e-9)
+        self.returns.append(ret)
 
         self.peak_value = max(self.peak_value, self.portfolio_value)
         drawdown = (self.peak_value - self.portfolio_value) / max(self.peak_value, 1e-9)
         drawdown_penalty = drawdown * 0.1
 
-        risk_adjusted = ret / max(float(self.df["atr"].iloc[self.step_index] / next_price), 1e-6)
-        reward = pnl - txn_cost - drawdown_penalty + risk_adjusted
+        atr_rel = float(self.df["atr"].iloc[self.step_index] / max(next_price, 1e-9)) if "atr" in self.df.columns else 0.0
+        risk_adjusted = ret / max(atr_rel, 1e-6)
+
+        sharpe_bonus = 0.0
+        if len(self.returns) > 10:
+            r = np.asarray(self.returns[-60:], dtype=float)
+            if r.std() > 1e-9:
+                sharpe_bonus = float(np.sqrt(252) * r.mean() / r.std()) * 0.01
+
+        reward = pnl - txn_cost - drawdown_penalty + risk_adjusted + sharpe_bonus
 
         return self._get_obs(), float(reward), terminated, truncated, {}
