@@ -51,12 +51,15 @@ def _normalize_price_frame(df):
     return normalized
 
 
-def load_data(tickers, start="2014-01-01", allow_fallback=True):
+def load_data(tickers, start="2014-01-01", period="10y", allow_fallback=True):
     data = {}
 
     for ticker in tickers:
         try:
-            df = yf.download(ticker, start=start, progress=False, auto_adjust=False)
+            if period:
+                df = yf.download(ticker, period=period, progress=False, auto_adjust=False)
+            else:
+                df = yf.download(ticker, start=start, progress=False, auto_adjust=False)
         except Exception:
             df = pd.DataFrame()
 
@@ -64,6 +67,10 @@ def load_data(tickers, start="2014-01-01", allow_fallback=True):
 
         if df.empty and allow_fallback:
             df = _fallback_ohlcv()
+
+        data[ticker] = df
+
+    return data
 
         data[ticker] = df
 
