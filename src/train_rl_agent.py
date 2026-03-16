@@ -9,20 +9,22 @@ from src.rl_environment import TradingEnv
 from src.transformer_model import add_transformer_predicted_return, set_global_seed
 
 
-def build_training_frame(ticker="AAPL", benchmark="SPY"):
-    data = load_data([ticker, benchmark], allow_fallback=True)
+def build_training_frame(ticker="AAPL"):
+    data = load_data([ticker, "SPY", "QQQ", "^VIX"], allow_fallback=True)
     df = data[ticker]
-    bench = data[benchmark]
 
     if df.empty:
         raise ValueError(f"No training data available for ticker: {ticker}")
 
     df = create_features(df)
+    spy = create_features(data["SPY"])
+    qqq = create_features(data["QQQ"])
+    vix = create_features(data["^VIX"])
 
-    bench = create_features(bench)
-    bench_trend = bench["Close"].pct_change(20).rename("market_index_trend")
-    df = df.join(bench_trend, how="left")
-    df["market_index_trend"] = df["market_index_trend"].fillna(0.0)
+    df["spy_trend_20"] = spy["Close"].pct_change(20).reindex(df.index).fillna(0.0)
+    df["qqq_trend_20"] = qqq["Close"].pct_change(20).reindex(df.index).fillna(0.0)
+    df["market_index_trend"] = ((df["spy_trend_20"] + df["qqq_trend_20"]) / 2.0).fillna(0.0)
+    df["vix_trend_20"] = vix["Close"].pct_change(20).reindex(df.index).fillna(0.0)
 
     df = detect_regime(df)
 
@@ -34,7 +36,7 @@ def build_training_frame(ticker="AAPL", benchmark="SPY"):
     df["vol_regime"] = (df["atr"] > atr_mean).astype(float)
 
     # Transformer predicted return feature for RL state integration
-    df = add_transformer_predicted_return(df, price_col="Close", window=20, seed=42)
+    df = add_transformer_predicted_return(df, price_col="Close", window=64, seed=42)
 
     df.dropna(inplace=True)
     if df.empty:
